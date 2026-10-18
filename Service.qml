@@ -249,5 +249,12 @@ Item {
     }
   }
 
+  Component.onCompleted: {
+    // 4.0.3 scoped services: don't wait on the async Process probe to hide.
+    Util.execDetached("mkdir -p " + Util.shellQuote(toggleDir)
+      + " && touch " + Util.shellQuote(barOffFile))
+    Qt.callLater(root.observeBarPanels)
+  }
+
   onBarChanged: Qt.callLater(root.observeBarPanels)
 }
