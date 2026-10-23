@@ -14,7 +14,7 @@ An event-driven auto-hide service plugin for the Omarchy bar.
 - Supports bars anchored to the top, bottom, left, or right screen edge.
 - Reveals the bar only when the pointer reaches its anchored screen edge.
 - Keeps the bar open while the pointer remains over it.
-- Hides the bar 200ms after the pointer leaves that area.
+- Hides the bar after a configurable delay when the pointer leaves that area.
 - Leaves the bar visible when the user opens it with the bar hotkey.
 - Keeps the bar visible while a bar popout is open wherever the plugin can see popout state.
 - Supports multiple monitors, scaling, rotation, and monitor offsets.
@@ -45,6 +45,25 @@ omarchy plugin add https://github.com/ericvrp/omarchy-bar-autohide.git --enable
 Omarchy clones the repository to
 `~/.config/omarchy/plugins/ericvrp.bar-autohide`, validates it, and enables the
 service in the shell configuration.
+
+## Configuration
+
+Set `hideDelayMs` on the plugin's entry in
+`~/.config/omarchy/shell.json`:
+
+```json
+{
+  "plugins": [
+    { "id": "ericvrp.bar-autohide", "hideDelayMs": 500 }
+  ]
+}
+```
+
+The default is `200` milliseconds. Values are clamped to the `0`–`5000`
+millisecond range; invalid types use the default. Restart the Omarchy shell
+after changing this setting. If you already have other plugin entries, add
+`hideDelayMs` to this plugin's existing entry rather than replacing the
+`plugins` array.
 
 ## Update
 
