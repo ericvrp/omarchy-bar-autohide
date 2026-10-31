@@ -2,19 +2,35 @@ import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
 import QtQuick
-import qs.Commons
 
 Item {
   id: root
 
   readonly property int revealThickness: 1
-  readonly property int hideDelayMs: 200
+  readonly property int defaultHideDelayMs: 200
+  readonly property int hideDelayMs: root.configuredHideDelay()
 
+  readonly property string configHome: Quickshell.env("XDG_CONFIG_HOME")
+    || Quickshell.env("HOME") + "/.config"
   property string toggleDir: Quickshell.env("HOME") + "/.local/state/omarchy/toggles"
   property string barOffFile: toggleDir + "/bar-off"
+  readonly property string runtimeBaseDir: Quickshell.env("XDG_RUNTIME_DIR")
+    || Quickshell.env("XDG_CACHE_HOME")
+    || Quickshell.env("HOME") + "/.cache"
+  readonly property string intentFilePath: leaseId
+    ? runtimeBaseDir + "/ericvrp.bar-autohide." + leaseId + ".intent" : ""
+  readonly property string operationFilePath: runtimeBaseDir + "/ericvrp.bar-autohide.operation"
+  readonly property string acknowledgementFilePath: runtimeBaseDir + "/ericvrp.bar-autohide.ack"
+  readonly property string currentOwnerPath: runtimeBaseDir + "/ericvrp.bar-autohide.current"
+  readonly property string journalFilePath: runtimeBaseDir + "/ericvrp.bar-autohide.journal"
+  readonly property string lockFilePath: runtimeBaseDir + "/ericvrp.bar-autohide.lock"
   property var shell: null
-  property bool initialBarHidden: false
-  property bool initialStateCaptured: false
+  property int requestRevision: 0
+  property bool intentWriteSucceeded: false
+  property bool ownerWriteSucceeded: false
+  property string leaseId: ""
+  property bool acquired: false
+  property bool closing: false
   property bool autoRevealed: false
   property bool edgeHovered: false
   property var barHoverObservers: []
@@ -31,10 +47,200 @@ Item {
   // services. `undefined !== null` is true, so the old check pinned the bar open.
   readonly property bool popoutOpen: !!(bar && bar.activePopout)
   readonly property bool canObserveBarSurfaces: !!(bar && "data" in bar)
-  // The host's toggles-dir watch can stop delivering events after quick
-  // successive flag changes (see Bar.qml's syncHidden). Nudge it so the bar's
-  // hidden probe re-reads the flag after each write.
-  readonly property string barSyncNudge: " && omarchy-shell -q omarchy.bar syncHidden"
+  FileView {
+    id: shellConfig
+
+    path: root.configHome + "/omarchy/shell.json"
+    blockLoading: true
+    printErrors: false
+  }
+
+  FileView {
+    id: stateIntent
+
+    path: root.intentFilePath
+    preload: false
+    atomicWrites: true
+    blockWrites: true
+    printErrors: false
+    onSaved: root.intentWriteSucceeded = true
+    onSaveFailed: function(error) {
+      root.intentWriteSucceeded = false
+      console.warn("bar-autohide: failed to publish bar state intent:", error)
+    }
+  }
+
+  FileView {
+    id: currentOwner
+
+    path: root.currentOwnerPath
+    preload: false
+    atomicWrites: true
+    blockWrites: true
+    printErrors: false
+    onSaved: root.ownerWriteSucceeded = true
+    onSaveFailed: function(error) {
+      root.ownerWriteSucceeded = false
+      console.warn("bar-autohide: failed to publish current owner:", error)
+    }
+  }
+
+  FileView {
+    id: writerOperation
+
+    path: root.operationFilePath
+    preload: false
+    blockAllReads: true
+    printErrors: false
+  }
+
+  // Watch the existing parent: the operation file does not exist on first use.
+  FileView {
+    path: root.runtimeBaseDir
+    watchChanges: true
+    printErrors: false
+    onFileChanged: operationAckTimer.restart()
+  }
+
+  FileView {
+    id: writerAcknowledgement
+
+    path: root.acknowledgementFilePath
+    preload: false
+    atomicWrites: true
+    blockWrites: true
+    blockAllReads: true
+    printErrors: false
+    onSaveFailed: function(error) {
+      console.warn("bar-autohide: failed to acknowledge bar state operation:", error)
+    }
+  }
+
+  FileView {
+    id: barStateWriter
+
+    path: Qt.resolvedUrl("./scripts/bar-state-writer.sh")
+    blockLoading: true
+    printErrors: false
+  }
+
+  function configuredHideDelay() {
+    let config
+    try {
+      config = JSON.parse(shellConfig.text())
+    } catch (error) {
+      console.warn("bar-autohide: invalid shell.json; using the default hide delay")
+      return root.defaultHideDelayMs
+    }
+
+    if (!config || typeof config !== "object" || Array.isArray(config)
+        || !Array.isArray(config.plugins)) {
+      console.warn("bar-autohide: invalid plugin configuration; using the default hide delay")
+      return root.defaultHideDelayMs
+    }
+
+    if (config.plugins.some(entry => !entry || typeof entry !== "object"
+        || Array.isArray(entry))) {
+      console.warn("bar-autohide: invalid plugin entries; using the default hide delay")
+      return root.defaultHideDelayMs
+    }
+
+    const matches = config.plugins.filter(entry => entry.id === "ericvrp.bar-autohide")
+    if (matches.length === 0) return root.defaultHideDelayMs
+    if (matches.length !== 1) {
+      console.warn("bar-autohide: duplicate plugin entries; using the default hide delay")
+      return root.defaultHideDelayMs
+    }
+
+    const value = matches[0].hideDelayMs
+    if (value === undefined) return root.defaultHideDelayMs
+    if (typeof value !== "number" || !Number.isInteger(value)) {
+      console.warn("bar-autohide: hideDelayMs must be an integer; using the default")
+      return root.defaultHideDelayMs
+    }
+    return Math.max(0, Math.min(5000, value))
+  }
+
+  function createLeaseId() {
+    return "xxxxxxxxxxxx4xxxyxxxxxxxxxxxxxxx".replace(/[xy]/g, function(c) {
+      const random = Math.floor(Math.random() * 16)
+      return (c === "x" ? random : (random & 3) | 8).toString(16)
+    })
+  }
+
+  function requestBarState(state) {
+    if (root.closing && state !== "closed") return
+    if (!root.leaseId) root.leaseId = root.createLeaseId()
+    root.intentWriteSucceeded = false
+    root.requestRevision += 1
+    const observedState = root.bar && root.bar.barHidden ? "hidden" : "visible"
+    stateIntent.setText(String(root.requestRevision) + ":" + state + ":" + observedState)
+    if (!root.intentWriteSucceeded) return
+
+    if (!root.acquired) {
+      root.ownerWriteSucceeded = false
+      currentOwner.setText(root.leaseId)
+      if (!root.ownerWriteSucceeded) return
+      root.acquired = true
+    }
+
+    const writer = String(barStateWriter.text() || "")
+    if (!writer) {
+      console.warn("bar-autohide: state writer is unavailable")
+      return
+    }
+    Quickshell.execDetached(["bash", "-c", writer, "bar-state-writer",
+      root.runtimeBaseDir, root.currentOwnerPath, root.journalFilePath,
+      root.lockFilePath, root.barOffFile, root.operationFilePath,
+      root.acknowledgementFilePath])
+  }
+
+  function acknowledgeOperation(actualState) {
+    writerOperation.reload()
+    writerOperation.waitForJob()
+    const operation = String(writerOperation.text() || "").trim().split(":")
+    if (operation.length !== 5 || !/^[0-9a-fA-F]{32}$/.test(operation[0])
+        || !/^[0-9]+$/.test(operation[1])
+        || !/^[0-9]+$/.test(operation[2])
+        || (operation[3] !== "hidden" && operation[3] !== "visible")
+        || !["preparing", "closing-preparing", "waiting", "closing"].includes(operation[4])) return false
+
+    const token = operation.slice(0, 4).join(":")
+    writerAcknowledgement.reload()
+    writerAcknowledgement.waitForJob()
+    // Duplicate host notifications still belong to this operation. Do not
+    // publish them as manual intent over a newer queued reveal/hide request.
+    if (String(writerAcknowledgement.text() || "").trim() === token)
+      return operation[3] === actualState
+
+    writerAcknowledgement.setText(token)
+    writerAcknowledgement.waitForJob()
+    return operation[3] === actualState
+  }
+
+  function acknowledgeObservedOperation() {
+    if (!root.bar || root.closing) return true
+    const actualState = root.bar.barHidden ? "hidden" : "visible"
+    writerOperation.reload()
+    writerOperation.waitForJob()
+    const operation = String(writerOperation.text() || "").trim().split(":")
+    if (operation.length !== 5
+        || (operation[4] !== "waiting" && operation[4] !== "closing")) return true
+    if (operation[3] !== actualState) return false
+    root.acknowledgeOperation(actualState)
+    return true
+  }
+
+  // A probe that reports an unchanged state emits no barHiddenChanged signal.
+  // Observe it only while an operation is pending, never as an idle poll.
+  Timer {
+    id: operationAckTimer
+    interval: 50
+    repeat: true
+    onTriggered: {
+      if (root.acknowledgeObservedOperation()) stop()
+    }
+  }
 
   onBarSurfaceHoveredChanged: {
     if (bar && typeof bar.setCenterSectionHovered === "function")
@@ -52,6 +258,7 @@ Item {
   }
 
   function removeBarHoverObserver(observer) {
+    if (root.closing) return
     barHoverObservers = barHoverObservers.filter(candidate => candidate !== observer)
     refreshBarSurfaceHovered()
   }
@@ -81,7 +288,6 @@ Item {
   }
 
   function cursorInBarBand(px, py) {
-    const size = Math.max(1, (bar && bar.barSize) || 30)
     const screens = Quickshell.screens || []
     for (let i = 0; i < screens.length; ++i) {
       const s = screens[i]
@@ -92,6 +298,14 @@ Item {
       const sh = Number(s.height || 0)
       if (sw <= 0 || sh <= 0) continue
       if (px < sx || px >= sx + sw || py < sy || py >= sy + sh) continue
+      let size = Number(bar && bar.barSize)
+      if (bar && typeof bar.barSizeFor === "function") {
+        const perScreenSize = Number(bar.barSizeFor(s.name))
+        if (Number.isFinite(perScreenSize) && perScreenSize > 0)
+          size = perScreenSize
+      }
+      if (!Number.isFinite(size) || size <= 0) size = 30
+      size = Math.max(1, size)
       if (position === "top") return py < sy + size
       if (position === "bottom") return py >= sy + sh - size
       if (position === "left") return px < sx + size
@@ -105,7 +319,7 @@ Item {
         || root.edgeHovered || root.barHovered || root.popoutOpen) return
     root.autoRevealed = false
     root.pointerInBarBand = false
-    Util.execDetached("touch " + Util.shellQuote(barOffFile) + barSyncNudge)
+    root.requestBarState("hidden")
   }
 
   function showBar() {
@@ -115,27 +329,7 @@ Item {
       if (!root.canObserveBarSurfaces)
         root.pointerInBarBand = true
       root.autoRevealed = true
-      Util.execDetached("rm -f " + Util.shellQuote(barOffFile) + barSyncNudge)
-    }
-  }
-
-  Process {
-    id: initialStateProbe
-
-    running: true
-    command: ["bash", "-c", "[[ -f " + Util.shellQuote(root.barOffFile)
-      + " ]] && echo hidden || echo visible"]
-    stdout: SplitParser {
-      onRead: function(line) {
-        root.initialBarHidden = String(line).trim() === "hidden"
-      }
-    }
-    onExited: function(exitCode) {
-      if (exitCode !== 0) return
-      root.initialStateCaptured = true
-      Util.execDetached("mkdir -p " + Util.shellQuote(root.toggleDir)
-        + " && touch " + Util.shellQuote(root.barOffFile) + barSyncNudge)
-      Qt.callLater(root.observeBarPanels)
+      root.requestBarState("visible")
     }
   }
 
@@ -186,10 +380,18 @@ Item {
   Connections {
     target: root.bar
     function onBarHiddenChanged() {
-      if (root.barHidden) {
+      // Read the signal's source directly: root.barHidden's binding may not
+      // have updated yet while this notification is being delivered.
+      const actualState = root.bar.barHidden ? "hidden" : "visible"
+      const acknowledged = root.acknowledgeOperation(actualState)
+      if (acknowledged) return
+      if (root.closing) return
+
+      if (actualState === "hidden") {
         root.autoRevealed = false
         root.pointerInBarBand = false
       }
+      root.requestBarState(actualState)
     }
   }
 
@@ -254,19 +456,26 @@ Item {
   }
 
   Component.onDestruction: {
+    root.closing = true
+    operationAckTimer.stop()
+    // Observers are parented to host windows, which outlive this service.
+    for (const observer of root.barHoverObservers) {
+      if (observer) observer.destroy()
+    }
+    root.barHoverObservers = []
     if (bar && typeof bar.setCenterSectionHovered === "function")
       bar.setCenterSectionHovered(false)
-    // Always clean up on unload. If the async probe never finished before
-    // teardown, its own restore never ran, so the rm below is the safe
-    // default (a no-op when nothing was stranded) instead of leaving
-    // bar-off behind to keep the bar stuck hidden.
-    if (initialStateCaptured && initialBarHidden) {
-      Util.execDetached("mkdir -p " + Util.shellQuote(toggleDir)
-        + " && touch " + Util.shellQuote(barOffFile) + barSyncNudge)
-    } else {
-      Util.execDetached("rm -f " + Util.shellQuote(barOffFile) + barSyncNudge)
-    }
+    root.requestBarState("closed")
   }
 
-  onBarChanged: Qt.callLater(root.observeBarPanels)
+  onBarChanged: Qt.callLater(() => {
+    operationAckTimer.restart()
+    root.observeBarPanels()
+  })
+
+  Component.onCompleted: {
+    operationAckTimer.restart()
+    root.requestBarState("hidden")
+    Qt.callLater(root.observeBarPanels)
+  }
 }

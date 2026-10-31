@@ -66,12 +66,8 @@ fi
 rm -rf "$plugin_dir"
 rm -rf "$legacy_plugin_dir"
 
-# Remove the bar-off toggle so the bar is always visible after uninstall,
-# even if the QML onDestruction handler did not fire cleanly. The plugin and
-# the core bar both read $HOME/.local/state/omarchy/toggles literally, so
-# target that path instead of honoring XDG_STATE_HOME here.
-state_dir="$HOME/.local/state/omarchy/toggles"
-rm -f "$state_dir/bar-off"
+# The running service restores the captured bar state on destruction. Do not
+# remove bar-off here: a queued service writer owns that state transition.
 
 if $restart; then
   command -v omarchy >/dev/null || { echo "omarchy is required to restart the shell" >&2; exit 1; }

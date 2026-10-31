@@ -5,6 +5,7 @@
 - Omarchy with the Quickshell bar
 - Hyprland
 - Python 3 for the local development helpers
+- Bun for the service regression tests
 
 ## Local Testing
 
@@ -41,18 +42,44 @@ updates the shell configuration, and restarts the shell.
 Pass `--no-restart` to either helper when testing configuration changes without
 restarting the live shell.
 
+Run the state-writer ordering checks with:
+
+```bash
+bash scripts/test-bar-state-writer.sh
+bun test scripts
+omarchy plugin validate .
+```
+
+The Bun tests run the real service in an isolated, offscreen Quickshell host
+with temporary state and a simulated bar. They do not change the desktop.
+They cover unchanged visibility probes, disable/manual-toggle/re-enable,
+baseline restoration, and removal of hover observers on unload.
+
+Visibility writes are serialized with `flock`. Each operation is marked as
+preparing before its flag write, then waiting once the flag is ready. The
+service checks pending operations until the host observes their state, even
+when no visibility-change signal is emitted. Failed operations are replayed
+before newer requests; an unloaded owner cannot block its own restoration.
+
 ## Configuration
 
-Defaults are near the top of `Service.qml`:
+`revealThickness` remains an internal `Service.qml` setting. The hide delay is
+configured on the plugin entry in `~/.config/omarchy/shell.json`:
 
-```qml
-readonly property int revealThickness: 1
-readonly property int hideDelayMs: 200
+```json
+{
+  "plugins": [
+    { "id": "ericvrp.bar-autohide", "hideDelayMs": 500 }
+  ]
+}
 ```
+
+The default is 200ms. Values are clamped to 0–5000ms; invalid types use the
+default. Restart the shell to apply a change. Re-running
+`./scripts/dev-install.sh` also restarts the shell unless `--no-restart` is
+passed.
 
 The active edge is detected from `shell.bar.position`. Increasing
 `revealThickness` makes the invisible edge trigger easier to reach, but also
 makes that many pixels intercept pointer input while the bar is hidden or was
 revealed by the edge trigger.
-
-Re-run `./scripts/dev-install.sh` after editing the working tree.

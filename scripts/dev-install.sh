@@ -26,6 +26,9 @@ mkdir -p "$plugin_dir" "$(dirname -- "$shell_config")"
 if [[ $repo_dir != "$plugin_dir" ]]; then
   install -m 0644 "$repo_dir/manifest.json" "$plugin_dir/manifest.json"
   install -m 0644 "$repo_dir/Service.qml" "$plugin_dir/Service.qml"
+  mkdir -p "$plugin_dir/scripts"
+  install -m 0644 "$repo_dir/scripts/bar-state-writer.sh" \
+    "$plugin_dir/scripts/bar-state-writer.sh"
 fi
 rm -f "$plugin_dir/cursor_poll.py"
 rm -rf "$legacy_plugin_dir"
