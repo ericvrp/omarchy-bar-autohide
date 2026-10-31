@@ -18,6 +18,9 @@ An event-driven auto-hide service plugin for the Omarchy bar.
 - Leaves the bar visible when the user opens it with the bar hotkey.
 - Keeps the bar visible while a bar popout is open wherever the plugin can see popout state.
 - Supports multiple monitors, scaling, rotation, and monitor offsets.
+- Keeps an opaque background behind expanding windows briefly when the bar
+  hides, avoiding a wallpaper flash. Glassy and transparent bars are unchanged.
+  Empty workspaces show the wallpaper immediately, without a background strip.
 
 A transparent one-pixel Quickshell surface listens for pointer entry at the bar
 edge. When the host still exposes the live Bar object, a passive hover observer

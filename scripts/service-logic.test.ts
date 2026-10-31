@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 
 const source = await Bun.file(new URL("../Service.qml", import.meta.url)).text();
+const backgroundSource = await Bun.file(new URL("../BarTransitionBackground.qml", import.meta.url)).text();
 
 function method(name: string, next: string) {
   return source.slice(source.indexOf(`  function ${name}(`), source.indexOf(`  function ${next}(`));
@@ -26,7 +27,9 @@ test("hide delay validates configuration and clamps integers", () => {
 });
 
 const inBand = new Function("Quickshell", "bar", "position", "px", "py",
-  `${method("cursorInBarBand", "hideBar")} return cursorInBarBand(px, py);`);
+  `${method("barThicknessFor", "hideBar")}
+   const root = { barThicknessFor };
+   return cursorInBarBand(px, py);`);
 
 test("bar hit testing uses each screen's thickness and logical offsets", () => {
   const screens = [
@@ -48,4 +51,22 @@ test("bar hit testing uses each screen's thickness and logical offsets", () => {
   expect(check("top", 1600, 0)).toBe(false);
   expect(inBand({ screens }, { barSize: 40 }, "top", 100, 39)).toBe(true);
   expect(inBand({ screens }, { barSize: 0, barSizeFor: () => NaN }, "top", 100, 29)).toBe(true);
+});
+
+const hasTiledWindow = new Function("workspace", backgroundSource.slice(
+  backgroundSource.indexOf("  function hasTiledWindow("),
+  backgroundSource.indexOf("  onBarHiddenChanged:")) + "return hasTiledWindow(workspace);");
+
+test("transition cover skips empty, floating-only, hidden, and fullscreen workspaces", () => {
+  const workspace = (...states: object[]) => ({ toplevels: { values: states.map(lastIpcObject => ({ lastIpcObject })) } });
+  expect(hasTiledWindow(null)).toBe(false);
+  expect(hasTiledWindow({})).toBe(false);
+  expect(hasTiledWindow(workspace())).toBe(false);
+  expect(hasTiledWindow(workspace({ mapped: true, floating: true }))).toBe(false);
+  expect(hasTiledWindow(workspace({ floating: false, hidden: true }))).toBe(false);
+  expect(hasTiledWindow(workspace({ floating: false, mapped: false }))).toBe(false);
+  expect(hasTiledWindow(workspace({ floating: false, fullscreen: 2 }))).toBe(false);
+  expect(hasTiledWindow(workspace({}))).toBe(false);
+  expect(hasTiledWindow(workspace({ mapped: true, floating: false }))).toBe(true);
+  expect(hasTiledWindow(workspace({ floating: true }, { floating: false }))).toBe(true);
 });

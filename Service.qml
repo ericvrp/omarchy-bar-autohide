@@ -287,6 +287,17 @@ Item {
     }
   }
 
+  function barThicknessFor(screenName) {
+    let size = Number(bar && bar.barSize)
+    if (bar && typeof bar.barSizeFor === "function") {
+      const perScreenSize = Number(bar.barSizeFor(screenName))
+      if (Number.isFinite(perScreenSize) && perScreenSize > 0)
+        size = perScreenSize
+    }
+    if (!Number.isFinite(size) || size <= 0) size = 30
+    return Math.max(1, size)
+  }
+
   function cursorInBarBand(px, py) {
     const screens = Quickshell.screens || []
     for (let i = 0; i < screens.length; ++i) {
@@ -298,14 +309,7 @@ Item {
       const sh = Number(s.height || 0)
       if (sw <= 0 || sh <= 0) continue
       if (px < sx || px >= sx + sw || py < sy || py >= sy + sh) continue
-      let size = Number(bar && bar.barSize)
-      if (bar && typeof bar.barSizeFor === "function") {
-        const perScreenSize = Number(bar.barSizeFor(s.name))
-        if (Number.isFinite(perScreenSize) && perScreenSize > 0)
-          size = perScreenSize
-      }
-      if (!Number.isFinite(size) || size <= 0) size = 30
-      size = Math.max(1, size)
+      const size = root.barThicknessFor(s.name)
       if (position === "top") return py < sy + size
       if (position === "bottom") return py >= sy + sh - size
       if (position === "left") return px < sx + size
@@ -418,6 +422,13 @@ Item {
 
       Component.onDestruction: root.removeBarHoverObserver(this)
     }
+  }
+
+  BarTransitionBackground {
+    barHidden: root.barHidden
+    position: root.position
+    barConfig: root.shell && root.shell.barConfig ? root.shell.barConfig : ({})
+    thicknessForScreen: root.barThicknessFor
   }
 
   Variants {

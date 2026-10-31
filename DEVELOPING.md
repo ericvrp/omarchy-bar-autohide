@@ -54,6 +54,21 @@ The Bun tests run the real service in an isolated, offscreen Quickshell host
 with temporary state and a simulated bar. They do not change the desktop.
 They cover unchanged visibility probes, disable/manual-toggle/re-enable,
 baseline restoration, and removal of hover observers on unload.
+They also check that the opaque transition background expires after hiding
+and stays disabled for glassy and transparent bar modes.
+
+`BarTransitionBackground.qml` keeps a click-through strip below application
+windows and above the wallpaper. In opaque mode it uses the bar's theme color
+while the bar is visible and for 300ms after hiding (50ms with animations off).
+Expanding windows cover it naturally. The surface stays mapped with transparent
+pixels afterwards, avoiding compositor layer fade-in/fade-out animations.
+This is a bounded workaround for the host releasing its reserved screen space
+at the same time it parks the bar; unusually slow custom window animations may
+outlast the cover.
+Only screens whose active workspace contains a visible tiled window use the
+strip; empty and floating-only workspaces show the wallpaper immediately.
+The window is permanently alpha-capable and transparent, with its color drawn
+in a child rectangle, so clearing the cover cannot leave an opaque black strip.
 
 Visibility writes are serialized with `flock`. Each operation is marked as
 preparing before its flag write, then waiting once the flag is ready. The

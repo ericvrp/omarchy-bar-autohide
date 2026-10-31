@@ -12,6 +12,18 @@ await mkdir(join(directory, ".local/state/omarchy/toggles"), { recursive: true }
 await mkdir(join(directory, ".config/omarchy"), { recursive: true });
 await mkdir(join(directory, "scripts"));
 await mkdir(join(directory, "bin"));
+await mkdir(join(directory, "Commons"));
+await writeFile(join(directory, "Commons/qmldir"), "module qs.Commons\nsingleton Style 1.0 Style.qml\n");
+await writeFile(join(directory, "Commons/Style.qml"), `pragma Singleton
+import QtQuick
+QtObject {
+  property bool reduceMotion: false
+  function duration(ms) { return reduceMotion ? 0 : ms }
+}
+`);
+await writeFile(join(directory, "BarTransitionBackground.qml"),
+  (await readFile(join(repo, "BarTransitionBackground.qml"), "utf8"))
+    .replace(/  Variants \{[\s\S]*\n\}/, "}"));
 await writeFile(join(directory, ".config/omarchy/shell.json"), JSON.stringify({
   plugins: [{ id: "ericvrp.bar-autohide", hideDelayMs: 0 }],
 }));
@@ -25,10 +37,12 @@ await writeFile(join(directory, "shell.qml"), `
 import Quickshell
 import Quickshell.Io
 import QtQuick
+import qs.Commons as Commons
 ShellRoot {
   id: host
   property var service: null
   property bool probing: true
+  property var barConfig: ({ background: "opaque" })
   property QtObject bar: QtObject {
     property var data: [{ instances: [hostWindow] }]
     property bool barHidden: false
@@ -65,10 +79,17 @@ ShellRoot {
     function pause(): void { host.probing = false }
     function resume(): void { host.probing = true }
     function assumeHidden(): void { host.bar.barHidden = true }
+    function glassy(): void { host.barConfig = { background: "glassy" } }
+    function transparent(): void { host.barConfig = { background: "none" } }
+    function opaque(): void { host.barConfig = { background: "opaque" } }
+    function reduceMotion(): void { Commons.Style.reduceMotion = true }
+    function normalMotion(): void { Commons.Style.reduceMotion = false }
     function status(): string {
       return JSON.stringify({ hidden: host.bar.barHidden, active: !!host.service,
         auto: host.service ? host.service.autoRevealed : false,
         delay: host.service ? host.service.hideDelayMs : -1,
+        cover: !!host.service && host.service.children.some(child => "covering" in child && child.covering),
+        coverDelay: host.service ? host.service.children.find(child => "coverDurationMs" in child).coverDurationMs : -1,
         observers: barContent.children.length })
     }
     function quit(): void { Quickshell.quit() }
@@ -129,12 +150,25 @@ test("service recovers across disable, manual toggles, unchanged probes, and rep
   await settled();
   expect(JSON.parse(await call("status")).delay).toBe(0);
   expect(JSON.parse(await call("status")).observers).toBe(1);
+  await Bun.sleep(350);
+  expect(JSON.parse(await call("status")).cover).toBe(false);
   await rm(flag); // A manual hotkey reveal must remain visible.
   await hidden(false);
   await settled();
   await Bun.sleep(100);
   expect(JSON.parse(await call("status")).hidden).toBe(false);
   expect(JSON.parse(await call("status")).auto).toBe(false);
+  expect(JSON.parse(await call("status")).cover).toBe(true);
+  await call("glassy");
+  expect(JSON.parse(await call("status")).cover).toBe(false);
+  await call("transparent");
+  expect(JSON.parse(await call("status")).cover).toBe(false);
+  await call("opaque");
+  expect(JSON.parse(await call("status")).cover).toBe(true);
+  expect(JSON.parse(await call("status")).coverDelay).toBe(300);
+  await call("reduceMotion");
+  expect(JSON.parse(await call("status")).coverDelay).toBe(50);
+  await call("normalMotion");
   await writeFile(flag, "");
   await hidden(true);
   await settled();
@@ -144,6 +178,9 @@ test("service recovers across disable, manual toggles, unchanged probes, and rep
   await call("leave");
   await hidden(true);
   await settled();
+  expect(JSON.parse(await call("status")).cover).toBe(true);
+  await Bun.sleep(350);
+  expect(JSON.parse(await call("status")).cover).toBe(false);
   await call("disable");
   await hidden(false);
   expect(JSON.parse(await call("status")).observers).toBe(0);

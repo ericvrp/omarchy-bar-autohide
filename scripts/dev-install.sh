@@ -25,6 +25,7 @@ mkdir -p "$plugin_dir" "$(dirname -- "$shell_config")"
 
 if [[ $repo_dir != "$plugin_dir" ]]; then
   install -m 0644 "$repo_dir/manifest.json" "$plugin_dir/manifest.json"
+  install -m 0644 "$repo_dir/BarTransitionBackground.qml" "$plugin_dir/BarTransitionBackground.qml"
   install -m 0644 "$repo_dir/Service.qml" "$plugin_dir/Service.qml"
   mkdir -p "$plugin_dir/scripts"
   install -m 0644 "$repo_dir/scripts/bar-state-writer.sh" \
