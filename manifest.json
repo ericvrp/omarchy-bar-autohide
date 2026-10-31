@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "ericvrp.bar-autohide",
   "name": "Bar Autohide",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "author": "Eric van Riet Paap",
   "description": "Event-driven auto-hide for the Omarchy bar",
   "license": "MIT",

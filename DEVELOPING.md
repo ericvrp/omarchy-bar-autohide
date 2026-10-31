@@ -5,6 +5,7 @@
 - Omarchy with the Quickshell bar
 - Hyprland
 - Python 3 for the local development helpers
+- Bun for the service regression tests
 
 ## Local Testing
 
@@ -45,7 +46,20 @@ Run the state-writer ordering checks with:
 
 ```bash
 bash scripts/test-bar-state-writer.sh
+bun test scripts
+omarchy plugin validate .
 ```
+
+The Bun tests run the real service in an isolated, offscreen Quickshell host
+with temporary state and a simulated bar. They do not change the desktop.
+They cover unchanged visibility probes, disable/manual-toggle/re-enable,
+baseline restoration, and removal of hover observers on unload.
+
+Visibility writes are serialized with `flock`. Each operation is marked as
+preparing before its flag write, then waiting once the flag is ready. The
+service checks pending operations until the host observes their state, even
+when no visibility-change signal is emitted. Failed operations are replayed
+before newer requests; an unloaded owner cannot block its own restoration.
 
 ## Configuration
 

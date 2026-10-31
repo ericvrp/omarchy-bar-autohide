@@ -29,7 +29,15 @@ if [[ "${PAUSE_BAR_SYNC:-0}" == 1 && ! -e "$SYNC_RELEASE" ]]; then
   : > "$SYNC_STARTED"
   while [[ ! -e "$SYNC_RELEASE" ]]; do sleep 0.01; done
 fi
-printf '%s\n' "$token" > "$TEST_ACK"
+state=visible
+[[ ! -e "$TEST_BAR_OFF" ]] || state=hidden
+previous="$(cat "$TEST_HOST_STATE" 2>/dev/null || echo visible)"
+printf '%s\n' "$state" > "$TEST_HOST_STATE"
+# A real host signals changes only. Unchanged probes need the QML operation
+# observer; disabling the service means neither path can acknowledge anything.
+if [[ "${NO_OBSERVER:-0}" != 1 && "$previous" != "$state" ]]; then
+  printf '%s\n' "$token" > "$TEST_ACK"
+fi
 exit 0
 MOCK
 chmod +x "$test_root/bin/omarchy-shell"
@@ -59,6 +67,7 @@ chmod +x "$test_root/bin/rm"
 export PATH="$test_root/bin:$PATH"
 export REAL_TOUCH="$real_touch" REAL_RM="$real_rm" TEST_BAR_OFF="$bar_off"
 export TEST_OPERATION="$operation"
+export TEST_HOST_STATE="$test_root/host-state"
 export TEST_ACK="$acknowledgement" SYNC_STARTED="$test_root/sync.started"
 export SYNC_RELEASE="$test_root/sync.release" TOUCH_STARTED="$test_root/touch.started"
 export TOUCH_RELEASE="$test_root/touch.release"
@@ -139,7 +148,7 @@ PAUSE_BAR_RESTORE=1 run_writer &
 writer_pid=$!
 for _ in {1..200}; do [[ -e "$RESTORE_STARTED" ]] && break; sleep 0.01; done
 [[ -e "$RESTORE_STARTED" ]]
-[[ "$(<"$operation")" == "$new_owner:2:"*":visible:closing" ]]
+[[ "$(<"$operation")" == "$new_owner:2:"*":visible:closing-preparing" ]]
 publish "$old_owner" 1 hidden visible
 printf '%s\n' "$old_owner" > "$current_owner"
 : > "$RESTORE_RELEASE"
@@ -191,6 +200,42 @@ run_writer
 publish "$old_owner" 4 closed hidden
 run_writer
 assert_state hidden
+[[ ! -e "$journal" ]]
+
+# Disabling destroys the observer before restoration. A manual hide while
+# disabled must not strand the next owner behind the old visible operation.
+rm -f "$bar_off"
+printf 'visible\n' > "$TEST_HOST_STATE"
+publish "$old_owner" 5 hidden
+run_writer
+publish "$old_owner" 6 closed hidden
+NO_OBSERVER=1 run_writer
+assert_state visible
+touch "$bar_off"
+printf 'hidden\n' > "$TEST_HOST_STATE"
+printf '%s\n' "$new_owner" > "$current_owner"
+publish "$new_owner" 1 hidden hidden
+run_writer
+assert_state hidden
+[[ "$(<"$journal")" == "hidden:$new_owner:1" ]]
+publish "$new_owner" 2 closed hidden
+run_writer
+[[ ! -e "$journal" ]]
+
+# Destruction while a visibility callback is outstanding must still restore
+# the baseline even though the observer is gone.
+rm -f "$bar_off" "$SYNC_STARTED" "$SYNC_RELEASE"
+printf 'visible\n' > "$TEST_HOST_STATE"
+printf '%s\n' "$old_owner" > "$current_owner"
+publish "$old_owner" 7 hidden
+NO_OBSERVER=1 PAUSE_BAR_SYNC=1 run_writer &
+writer_pid=$!
+for _ in {1..200}; do [[ -e "$SYNC_STARTED" ]] && break; sleep 0.01; done
+[[ -e "$SYNC_STARTED" ]]
+publish "$old_owner" 8 closed hidden
+: > "$SYNC_RELEASE"
+wait "$writer_pid"
+assert_state visible
 [[ ! -e "$journal" ]]
 
 printf 'bar state writer ordering checks passed\n'

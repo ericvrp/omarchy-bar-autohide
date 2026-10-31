@@ -2,7 +2,6 @@ import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
 import QtQuick
-import qs.Commons
 
 Item {
   id: root
@@ -95,6 +94,14 @@ Item {
     printErrors: false
   }
 
+  // Watch the existing parent: the operation file does not exist on first use.
+  FileView {
+    path: root.runtimeBaseDir
+    watchChanges: true
+    printErrors: false
+    onFileChanged: operationAckTimer.restart()
+  }
+
   FileView {
     id: writerAcknowledgement
 
@@ -166,7 +173,7 @@ Item {
     if (!root.leaseId) root.leaseId = root.createLeaseId()
     root.intentWriteSucceeded = false
     root.requestRevision += 1
-    const observedState = root.barHidden ? "hidden" : "visible"
+    const observedState = root.bar && root.bar.barHidden ? "hidden" : "visible"
     stateIntent.setText(String(root.requestRevision) + ":" + state + ":" + observedState)
     if (!root.intentWriteSucceeded) return
 
@@ -196,12 +203,15 @@ Item {
         || !/^[0-9]+$/.test(operation[1])
         || !/^[0-9]+$/.test(operation[2])
         || (operation[3] !== "hidden" && operation[3] !== "visible")
-        || (operation[4] !== "waiting" && operation[4] !== "closing")) return false
+        || !["preparing", "closing-preparing", "waiting", "closing"].includes(operation[4])) return false
 
     const token = operation.slice(0, 4).join(":")
     writerAcknowledgement.reload()
     writerAcknowledgement.waitForJob()
-    if (String(writerAcknowledgement.text() || "").trim() === token) return false
+    // Duplicate host notifications still belong to this operation. Do not
+    // publish them as manual intent over a newer queued reveal/hide request.
+    if (String(writerAcknowledgement.text() || "").trim() === token)
+      return operation[3] === actualState
 
     writerAcknowledgement.setText(token)
     writerAcknowledgement.waitForJob()
@@ -209,14 +219,27 @@ Item {
   }
 
   function acknowledgeObservedOperation() {
-    if (!root.bar) return
-    const actualState = root.barHidden ? "hidden" : "visible"
+    if (!root.bar || root.closing) return true
+    const actualState = root.bar.barHidden ? "hidden" : "visible"
     writerOperation.reload()
     writerOperation.waitForJob()
     const operation = String(writerOperation.text() || "").trim().split(":")
-    if (operation.length !== 5 || operation[3] !== actualState
-        || (operation[4] !== "waiting" && operation[4] !== "closing")) return
+    if (operation.length !== 5
+        || (operation[4] !== "waiting" && operation[4] !== "closing")) return true
+    if (operation[3] !== actualState) return false
     root.acknowledgeOperation(actualState)
+    return true
+  }
+
+  // A probe that reports an unchanged state emits no barHiddenChanged signal.
+  // Observe it only while an operation is pending, never as an idle poll.
+  Timer {
+    id: operationAckTimer
+    interval: 50
+    repeat: true
+    onTriggered: {
+      if (root.acknowledgeObservedOperation()) stop()
+    }
   }
 
   onBarSurfaceHoveredChanged: {
@@ -235,6 +258,7 @@ Item {
   }
 
   function removeBarHoverObserver(observer) {
+    if (root.closing) return
     barHoverObservers = barHoverObservers.filter(candidate => candidate !== observer)
     refreshBarSurfaceHovered()
   }
@@ -356,12 +380,14 @@ Item {
   Connections {
     target: root.bar
     function onBarHiddenChanged() {
-      const actualState = root.barHidden ? "hidden" : "visible"
+      // Read the signal's source directly: root.barHidden's binding may not
+      // have updated yet while this notification is being delivered.
+      const actualState = root.bar.barHidden ? "hidden" : "visible"
       const acknowledged = root.acknowledgeOperation(actualState)
       if (acknowledged) return
       if (root.closing) return
 
-      if (root.barHidden) {
+      if (actualState === "hidden") {
         root.autoRevealed = false
         root.pointerInBarBand = false
       }
@@ -431,18 +457,24 @@ Item {
 
   Component.onDestruction: {
     root.closing = true
+    operationAckTimer.stop()
+    // Observers are parented to host windows, which outlive this service.
+    for (const observer of root.barHoverObservers) {
+      if (observer) observer.destroy()
+    }
+    root.barHoverObservers = []
     if (bar && typeof bar.setCenterSectionHovered === "function")
       bar.setCenterSectionHovered(false)
     root.requestBarState("closed")
   }
 
   onBarChanged: Qt.callLater(() => {
-    root.acknowledgeObservedOperation()
+    operationAckTimer.restart()
     root.observeBarPanels()
   })
 
   Component.onCompleted: {
-    root.acknowledgeObservedOperation()
+    operationAckTimer.restart()
     root.requestBarState("hidden")
     Qt.callLater(root.observeBarPanels)
   }

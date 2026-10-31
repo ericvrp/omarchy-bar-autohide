@@ -35,6 +35,7 @@ shell-side fix.
 
 - Omarchy with the Quickshell bar
 - Hyprland
+- Bash, coreutils, and `flock` (included with Omarchy)
 
 ## Install
 
